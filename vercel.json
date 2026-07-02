@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/validate", "destination": "/api/index" },
+    { "source": "/send", "destination": "/api/index" },
+    { "source": "/", "destination": "/api/index" }
+  ]
+}
