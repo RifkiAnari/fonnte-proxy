@@ -5,28 +5,38 @@ const axios = require("axios");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors()); // izinkan semua origin (dashboard HR bisa akses)
+app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ── Keep-alive ping supaya Railway tidak sleep
+setInterval(() => {
+  axios.get(`http://localhost:${PORT}/`).catch(() => {});
+}, 4 * 60 * 1000); // ping setiap 4 menit
 
 // ── Health check
 app.get("/", (req, res) => {
   res.json({ status: true, message: "Fonnte Proxy HR aktif ✓" });
 });
 
-// ── Validate token
+// ── Validate token — cek device aktif di Fonnte
 app.post("/validate", async (req, res) => {
   const token = req.headers["authorization"];
   if (!token) return res.status(400).json({ status: false, reason: "Token tidak ditemukan" });
   try {
-    const response = await axios.post(
-      "https://api.fonnte.com/validate",
-      {},
-      { headers: { Authorization: token } }
-    );
-    res.json(response.data);
+    // Fonnte pakai endpoint /device untuk cek status token
+    const response = await axios.get("https://api.fonnte.com/device", {
+      headers: { Authorization: token }
+    });
+    // Kalau dapat response apapun dari Fonnte = token valid
+    if (response.data) {
+      res.json({ status: true, detail: response.data });
+    } else {
+      res.json({ status: false, reason: "Token tidak valid" });
+    }
   } catch (err) {
-    res.status(500).json({ status: false, reason: "Gagal terhubung ke Fonnte" });
+    const errMsg = err.response?.data || "Gagal terhubung ke Fonnte";
+    res.status(200).json({ status: false, reason: JSON.stringify(errMsg) });
   }
 });
 
@@ -43,25 +53,29 @@ app.post("/send", async (req, res) => {
     });
     res.json(response.data);
   } catch (err) {
-    res.status(500).json({ status: false, reason: "Gagal kirim pesan ke Fonnte" });
+    const errMsg = err.response?.data || "Gagal kirim pesan";
+    res.status(200).json({ status: false, reason: JSON.stringify(errMsg) });
   }
 });
 
-// ── Blast ke banyak nomor (dengan jeda otomatis)
+// ── Blast ke banyak nomor
 app.post("/blast", async (req, res) => {
   const token = req.headers["authorization"];
   if (!token) return res.status(400).json({ status: false, reason: "Token tidak ditemukan" });
   const { targets, message, delay = 3000 } = req.body;
-  // targets: [{ name, wa, role }]
   if (!targets || !targets.length || !message) {
     return res.status(400).json({ status: false, reason: "targets dan message wajib diisi" });
   }
-
   const results = [];
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i];
     try {
-      const params = new URLSearchParams({ target: t.wa, message: message.replace("{name}", t.name).replace("{role}", t.role), typing: true, delay: 2 });
+      const params = new URLSearchParams({
+        target: t.wa,
+        message: message.replace("{name}", t.name).replace("{role}", t.role),
+        typing: true,
+        delay: 2
+      });
       const response = await axios.post("https://api.fonnte.com/send", params.toString(), {
         headers: { Authorization: token, "Content-Type": "application/x-www-form-urlencoded" }
       });
@@ -69,10 +83,8 @@ app.post("/blast", async (req, res) => {
     } catch {
       results.push({ name: t.name, wa: t.wa, status: false, detail: "Connection error" });
     }
-    // jeda antar pesan agar tidak kena blokir WA
     if (i < targets.length - 1) await new Promise(r => setTimeout(r, delay));
   }
-
   const success = results.filter(r => r.status).length;
   res.json({ status: true, total: targets.length, success, failed: targets.length - success, results });
 });
